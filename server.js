@@ -17,14 +17,16 @@ const ADMIN_USERNAME = 'flexjeu';
 const DATA_FILE = path.join(__dirname, 'data.json');
 function loadData() {
   try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
-  catch(e) { return { users:{}, trades:{}, notifs:{}, convs:{}, userConvs:{}, bans:{} }; }
+  catch(e) { return { users:{}, trades:{}, notifs:{}, convs:{}, userConvs:{}, bans:{}, mods:[] }; }
 }
 function saveData() {
   if (!db.bans) db.bans = {};
+  if (!db.mods) db.mods = [];
   fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
 }
 let db = loadData();
 if (!db.bans) db.bans = {};
+if (!db.mods) db.mods = [];
 setInterval(saveData, 5000);
 
 function hash(p) { return crypto.createHash('sha256').update(p + 'aotrfr_salt_2025').digest('hex'); }
@@ -35,6 +37,8 @@ const sessions = {};
 const socketToToken = {};
 function getUser(token) { return sessions[token] || null; }
 function isAdmin(token) { const s = getUser(token); return s && s.username === ADMIN_USERNAME; }
+function isMod(token) { const s = getUser(token); return s && db.mods.includes(s.username); }
+function hasAdminAccess(token) { return isAdmin(token) || isMod(token); }
 
 function getBanStatus(username) {
   const ban = db.bans[username];
@@ -101,27 +105,29 @@ app.post('/api/auth-check', (req, res) => {
 
 // ── Admin endpoints ───────────────────────────────────────────────
 app.post('/api/admin/users', (req, res) => {
-  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  if (!hasAdminAccess(req.body.token)) return res.json({ error: 'Acces refuse' });
   const users = Object.values(db.users).map(u => ({
     username: u.username, createdAt: u.createdAt,
     tradeCount: u.tradeCount||0, ratingGood: u.ratingGood||0,
-    ban: db.bans[u.username] || null
+    ban: db.bans[u.username] || null,
+    isMod: db.mods.includes(u.username)
   })).sort((a,b) => b.createdAt - a.createdAt);
   res.json({ ok: true, users });
 });
 
 app.post('/api/admin/ban', (req, res) => {
-  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  if (!hasAdminAccess(req.body.token)) return res.json({ error: 'Acces refuse' });
   const { username, type, duration, reason } = req.body;
   const u = username?.toLowerCase();
   if (!db.users[u]) return res.json({ error: 'Utilisateur introuvable' });
   if (u === ADMIN_USERNAME) return res.json({ error: 'Impossible de bannir l admin' });
+  // Les mods ne peuvent pas bannir d'autres mods
+  if (isMod(req.body.token) && db.mods.includes(u)) return res.json({ error: 'Les modérateurs ne peuvent pas bannir d\'autres modérateurs' });
   if (type === 'permanent') {
     db.bans[u] = { type: 'permanent', reason: reason||'', bannedAt: Date.now() };
   } else {
     db.bans[u] = { type: 'temp', reason: reason||'', until: Date.now() + (duration||60)*60*1000, bannedAt: Date.now(), durationMin: duration };
   }
-  // Kill session + remove trades
   for (const [t, s] of Object.entries(sessions)) {
     if (s.username === u) { const sock = s.socketId; delete sessions[t]; if (sock) io.to(sock).emit('force:banned', { message: banMessage(db.bans[u]) }); }
   }
@@ -132,23 +138,26 @@ app.post('/api/admin/ban', (req, res) => {
 });
 
 app.post('/api/admin/unban', (req, res) => {
-  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
-  delete db.bans[req.body.username?.toLowerCase()];
+  if (!hasAdminAccess(req.body.token)) return res.json({ error: 'Acces refuse' });
+  const u = req.body.username?.toLowerCase();
+  if (isMod(req.body.token) && db.mods.includes(u)) return res.json({ error: 'Accès refusé' });
+  delete db.bans[u];
   saveData();
   res.json({ ok: true });
 });
 
 app.post('/api/admin/delete-trade', (req, res) => {
-  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  if (!hasAdminAccess(req.body.token)) return res.json({ error: 'Acces refuse' });
   if (db.trades[req.body.tradeId]) { db.trades[req.body.tradeId].status = 'deleted'; io.emit('trade:deleted', req.body.tradeId); }
   saveData();
   res.json({ ok: true });
 });
 
 app.post('/api/admin/delete-user', (req, res) => {
-  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  if (!hasAdminAccess(req.body.token)) return res.json({ error: 'Acces refuse' });
   const u = req.body.username?.toLowerCase();
   if (u === ADMIN_USERNAME) return res.json({ error: 'Impossible de supprimer l admin' });
+  if (isMod(req.body.token) && db.mods.includes(u)) return res.json({ error: 'Les modérateurs ne peuvent pas supprimer d\'autres modérateurs' });
   for (const [t, s] of Object.entries(sessions)) {
     if (s.username === u) { const sock = s.socketId; delete sessions[t]; if (sock) io.to(sock).emit('force:banned', { message: 'Ton compte a ete supprime par l administrateur.' }); }
   }
@@ -156,6 +165,30 @@ app.post('/api/admin/delete-user', (req, res) => {
   Object.values(db.trades).forEach(tr => { if (tr.author === u) tr.status = 'deleted'; });
   saveData();
   res.json({ ok: true });
+});
+
+// ── Gestion des modérateurs (super-admin uniquement) ──────────────
+app.post('/api/admin/mods', (req, res) => {
+  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  res.json({ ok: true, mods: db.mods });
+});
+
+app.post('/api/admin/mods/add', (req, res) => {
+  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  const u = req.body.username?.toLowerCase();
+  if (!db.users[u]) return res.json({ error: 'Utilisateur introuvable' });
+  if (u === ADMIN_USERNAME) return res.json({ error: 'Impossible' });
+  if (!db.mods.includes(u)) db.mods.push(u);
+  saveData();
+  res.json({ ok: true, mods: db.mods });
+});
+
+app.post('/api/admin/mods/remove', (req, res) => {
+  if (!isAdmin(req.body.token)) return res.json({ error: 'Acces refuse' });
+  const u = req.body.username?.toLowerCase();
+  db.mods = db.mods.filter(m => m !== u);
+  saveData();
+  res.json({ ok: true, mods: db.mods });
 });
 
 // ── Sockets ───────────────────────────────────────────────────────
