@@ -259,6 +259,14 @@ io.on('connection', (socket) => {
     if (db.notifs[s.username]?.[notifId]) { db.notifs[s.username][notifId].status='declined'; db.notifs[s.username][notifId].read=true; }
     socket.emit('notifs', Object.values(db.notifs[s.username]).sort((a,b)=>b.ts-a.ts));
   });
+  socket.on('delete:conv', ({ token, convId }) => {
+    const s = auth(token); if (!s) return;
+    const conv = db.convs[convId];
+    if (!conv || !conv.participants.includes(s.username)) return;
+    if (db.userConvs[s.username]) delete db.userConvs[s.username][convId];
+    socket.emit('conv:deleted', convId);
+    socket.emit('convs', Object.keys(db.userConvs[s.username]||{}).map(id=>db.convs[id]).filter(Boolean).sort((a,b)=>b.createdAt-a.createdAt));
+  });
   socket.on('get:convs', ({ token }) => {
     const s = auth(token); if (!s) return;
     socket.emit('convs', Object.keys(db.userConvs[s.username]||{}).map(id=>db.convs[id]).filter(Boolean).sort((a,b)=>b.createdAt-a.createdAt));
@@ -292,19 +300,4 @@ io.on('connection', (socket) => {
     const s = auth(token); if (!s) return;
     if (db.users[targetUser]) db.users[targetUser].ratingGood = (db.users[targetUser].ratingGood||0)+1;
   });
-  socket.on('disconnect', () => {
-    const token = socketToToken[socket.id];
-    if (token && sessions[token]) delete sessions[token].socketId;
-    delete socketToToken[socket.id];
-  });
-});
-
-function findSocket(username) {
-  for (const [token, s] of Object.entries(sessions)) {
-    if (s.username === username && s.socketId) return s.socketId;
-  }
-  return null;
-}
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`AOTR FR Trade Center server — port ${PORT}`));
+  socket.on('disconnect', () =>
