@@ -242,11 +242,9 @@ io.on('connection', (socket) => {
     const notif = db.notifs[s.username]?.[notifId]; if (!notif) return;
     notif.status = 'accepted'; notif.read = true;
     const parts = [s.username, fromUser].sort();
-    const convId = parts.join('__') + '__' + tradeId;
-    if (!db.convs[convId]) {
-      db.convs[convId] = { id: convId, participants: parts, tradeId, messages: [{ id: genId(), from: '__system__', text: 'Connexion etablie ! Bonne discussion.', ts: Date.now() }], status: 'open', createdAt: Date.now() };
-      parts.forEach(u => { if (!db.userConvs[u]) db.userConvs[u]={}; db.userConvs[u][convId]=true; });
-    }
+    const convId = parts.join('__') + '__' + tradeId + '__' + Date.now();
+    db.convs[convId] = { id: convId, participants: parts, tradeId, messages: [{ id: genId(), from: '__system__', text: 'Connexion etablie ! Bonne discussion.', ts: Date.now() }], status: 'open', createdAt: Date.now() };
+    parts.forEach(u => { if (!db.userConvs[u]) db.userConvs[u]={}; db.userConvs[u][convId]=true; });
     const an = { id: genId(), type: 'accepted', from: s.username, convId, tradeId, message: s.username+' a accepte ta demande !', ts: Date.now(), read: false };
     if (!db.notifs[fromUser]) db.notifs[fromUser] = {};
     db.notifs[fromUser][an.id] = an;
@@ -273,38 +271,4 @@ io.on('connection', (socket) => {
     const s = auth(token); if (!s) return;
     const conv = db.convs[convId];
     if (!conv || !conv.participants.includes(s.username) || conv.status !== 'open') return;
-    const msg = { id: genId(), from: s.username, text, ts: Date.now() };
-    conv.messages.push(msg); io.to('conv:' + convId).emit('msg:new', { convId, msg });
-  });
-  socket.on('trade:done', ({ token, convId }) => {
-    const s = auth(token); if (!s) return;
-    const conv = db.convs[convId]; if (!conv || !conv.participants.includes(s.username)) return;
-    conv.status = 'closed'; conv.messages.push({ id: genId(), from: '__system__', text: 'Trade confirme avec succes !', ts: Date.now() });
-    io.to('conv:' + convId).emit('conv:update', conv);
-  });
-  socket.on('trade:scam', ({ token, convId }) => {
-    const s = auth(token); if (!s) return;
-    const conv = db.convs[convId]; if (!conv || !conv.participants.includes(s.username)) return;
-    conv.status = 'closed'; conv.messages.push({ id: genId(), from: '__system__', text: 'Signalement effectue. Ouvre un ticket Discord.', ts: Date.now() });
-    io.to('conv:' + convId).emit('conv:update', conv);
-  });
-  socket.on('rate:good', ({ token, targetUser }) => {
-    const s = auth(token); if (!s) return;
-    if (db.users[targetUser]) db.users[targetUser].ratingGood = (db.users[targetUser].ratingGood||0)+1;
-  });
-  socket.on('disconnect', () => {
-    const token = socketToToken[socket.id];
-    if (token && sessions[token]) delete sessions[token].socketId;
-    delete socketToToken[socket.id];
-  });
-});
-
-function findSocket(username) {
-  for (const [token, s] of Object.entries(sessions)) {
-    if (s.username === username && s.socketId) return s.socketId;
-  }
-  return null;
-}
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`AOTR FR Trade Center server — port ${PORT}`));
+    const msg = { id: genId
