@@ -300,4 +300,19 @@ io.on('connection', (socket) => {
     const s = auth(token); if (!s) return;
     if (db.users[targetUser]) db.users[targetUser].ratingGood = (db.users[targetUser].ratingGood||0)+1;
   });
-  socket.on('disconnect', () =>
+  socket.on('disconnect', () => {
+    const token = socketToToken[socket.id];
+    if (token && sessions[token]) delete sessions[token].socketId;
+    delete socketToToken[socket.id];
+  });
+});
+
+function findSocket(username) {
+  for (const [token, s] of Object.entries(sessions)) {
+    if (s.username === username && s.socketId) return s.socketId;
+  }
+  return null;
+}
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`AOTR FR Trade Center server — port ${PORT}`));
